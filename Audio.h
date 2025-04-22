@@ -55,6 +55,39 @@ std::map<char, int> const inputMaps = {
 	{'M', 11 },
 };
 
+enum ChannelStatus
+{
+	CHS_INACTIVE,
+	CHS_OPENING,
+	CHS_USED,
+	CHS_CLOSING,
+};
+
+class LLChannel
+{
+
+public:
+	ChannelStatus status;
+	double channelFrequency;
+	double channelPhase;
+
+	int fadeInAmount = 128;
+	int fadeOutAmount = 128;
+
+	LLChannel();
+	~LLChannel();
+
+	int ChannelOpen(int id);
+	int ChannelClose();
+	int ChannelPlay();
+
+	int ChannelProc(double* Buffer);
+	int FillChannelBuffer(double* Buffer, void(*funcprt)(LLChannel, double&, int));
+
+	void static fadeInEff(LLChannel channel, double& amount, int curPos);
+	void static fadeOutEff(LLChannel channel, double& amount, int curPos);
+};
+
 class LLAudio
 {
 	/// Variables
@@ -69,6 +102,7 @@ class LLAudio
 	struct AudioBuffer {
 		WAVEHDR pwh;
 		short* audioBuffer;
+		double* HP_audioBuffer;
 		bool hasNewPlayData;
 		bool hasEnded;
 	};
@@ -77,11 +111,12 @@ class LLAudio
 	void MainAudioLoop();
 
 public:
-
 	LLAudio();
 	~LLAudio();
 	std::unordered_set<int> pressedNotes;
 	AudioBuffer audioBuffer[4];
+	LLChannel channels[12];
+	static inline int openChannels = 0;
 	// Creation of the device
 	int LLAudioInit();
 	// Creation of buffers, which are used to store information

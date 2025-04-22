@@ -87,18 +87,24 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lParam)
 		case WM_KEYDOWN:
 		{
 			auto it = inputMaps.find(wParam);
-			if (it != inputMaps.end()) {
-				audioObject->pressedNotes.insert(it->second);
-				synthPhases[it->second] = 0.0;
+			if (it != inputMaps.end()) 
+			{
+				if (audioObject->channels[it->second].status == CHS_INACTIVE)
+				{
+					audioObject->channels[it->second].ChannelOpen(it->second);
+				}
+				break;
 			}
-			break;
 		}
 
 		case WM_KEYUP:
 		{
 			auto it = inputMaps.find(wParam);
 			if (it != inputMaps.end()) {
-				audioObject->pressedNotes.erase(it->second);
+				if (audioObject->channels[it->second].status == CHS_USED)
+				{
+					audioObject->channels[it->second].ChannelClose();
+				}
 			}
 			break;
 		}

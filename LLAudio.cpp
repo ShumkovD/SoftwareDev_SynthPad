@@ -1,17 +1,19 @@
 #include"Audio.h"
 
+
+/// Sound Data
+//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-
+constexpr int SAMPLE_RATE = 44100;
+//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-
+
 /// Buffer Data
 //+-+-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-
-const int BUFFER_SIZE = 1024;
-int CUR_BUFFER = 0;
+constexpr int BUFFER_AMOUNT = 4;
+constexpr int BUFFER_SIZE = 1024;
+constexpr int CUR_BUFFER = 0;
 //+-+-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-
 
-/// Synth Data
-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-
-static float SYNTH_PHASE = 0;
-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-
-
-
+double SYNTH_PHASE = 0;
 
 /// LLAudio Class Functions
 //+-+-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-//+-+-
@@ -101,44 +103,42 @@ int LLAudio::LLAudioCreateAudioBuffer()
 	for (int i = 0; i < 4; i++)
 	{
 		audioBuffer[i].audioBuffer = new short[BUFFER_SIZE];
+		audioBuffer[i].HP_audioBuffer = new double[BUFFER_SIZE];
 		audioBuffer[i].hasEnded = true;
 		audioBuffer[i].hasNewPlayData = false;
 	}
 	return 0;
 }
 
-// Put information about sound here
+//// Put information about sound here
 int LLAudio::FillTheBuffer(int bufferIndex)
 {
 
 	if (!audioBuffer[bufferIndex].hasEnded)
 		return 0;
 
-	for (int i = 0; i < BUFFER_SIZE; i++)
-	{
-		double mixedSample = 0.0;
-		audioBuffer[bufferIndex].audioBuffer[i] = 0;
-		for (int note : pressedNotes)
+	std::fill(audioBuffer[bufferIndex].HP_audioBuffer,
+		audioBuffer[bufferIndex].HP_audioBuffer + BUFFER_SIZE, 0.0);
+
+		for (LLChannel& channel : channels)
 		{
-			double freq = noteFrequencies[note];
-			double& phase = synthPhases[note]; // Reference to retain between calls
+			if (channel.status == ChannelStatus::CHS_INACTIVE) continue;
 
-			mixedSample += std::sin(phase);
-			phase += 2.0 * std::numbers::pi * freq / 44100.0;
-
-			if (phase > 2.0 * std::numbers::pi)
-				phase -= 2.0 * std::numbers::pi;
+			channel.ChannelProc(audioBuffer[bufferIndex].HP_audioBuffer);
 		}
 
 
+
+		for (int i = 0; i < BUFFER_SIZE; i++)
+		{
 		// Normalize (optional): reduce volume if multiple notes
-		if (!pressedNotes.empty())
-			mixedSample /= pressedNotes.size();
+		if (openChannels > 0)
+			 audioBuffer[bufferIndex].HP_audioBuffer[i] /= openChannels;
+
 
 		// Clamp and store as 16-bit PCM
-		mixedSample = std::clamp(mixedSample, -1.0, 1.0);
-		audioBuffer[bufferIndex].audioBuffer[i] = static_cast<short>(mixedSample * 32767);
-
+		audioBuffer[bufferIndex].HP_audioBuffer[i] = std::clamp(audioBuffer[bufferIndex].HP_audioBuffer[i], -1.0, 1.0);
+		audioBuffer[bufferIndex].audioBuffer[i] = static_cast<short>(audioBuffer[bufferIndex].HP_audioBuffer[i] * 32767);
 	}
 
 	audioBuffer[bufferIndex].hasNewPlayData = true;
@@ -185,10 +185,8 @@ void  LLAudio::MainAudioLoop()
 	{
 		for (int i = 0; i < 4; i++)
 		{
-			if (pressedNotes.size() == 0)
-			{
-				continue;
-			}
+			if (openChannels == 0) continue;
+
 			// Try to fill if it's empty and ready
 			if (audioBuffer[i].hasEnded && !audioBuffer[i].hasNewPlayData)
 			{
@@ -200,13 +198,20 @@ void  LLAudio::MainAudioLoop()
 			{
 				LLAudioPrepareAudioBuffer(i);
 				LLAudioPlayBuffers(i);
+				for (LLChannel& channel : channels)
+				{
+					if (channel.status == CHS_CLOSING)
+					{
+						LLAudio::openChannels--;
+						channel.status = CHS_INACTIVE;
+					}
+				}
 				audioBuffer[i].hasEnded = false;
 			}
 		}
 
-
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
 	}
-
 }
 
 int LLAudio::FindBufferIndex(WAVEHDR* header)
@@ -230,12 +235,93 @@ void CALLBACK LLAudioCallback(HWAVEOUT hwo, UINT uMsg, DWORD_PTR dwInstance, DWO
 		int doneBufferIndex = self->FindBufferIndex(doneHeader);
 		self->audioBuffer[doneBufferIndex].hasNewPlayData = false;
 		self->audioBuffer[doneBufferIndex].hasEnded = true;
-
-		for (int i = 0; i < BUFFER_SIZE; i++)
-		{
-			// Clear buffer
-			self->audioBuffer[doneBufferIndex].audioBuffer[i] = 0;
-		}
 	}
 }
 
+
+
+LLChannel::LLChannel()
+{
+
+}
+
+LLChannel::~LLChannel()
+{
+
+}
+
+int LLChannel::ChannelOpen(int id) {
+	LLAudio::openChannels++;
+	channelFrequency = noteFrequencies[id];
+	channelPhase = 0.0;
+	status = ChannelStatus::CHS_OPENING;
+	return 0;
+}
+int LLChannel::ChannelClose() {
+
+	status = ChannelStatus::CHS_CLOSING;
+	return 0;
+}
+int LLChannel::ChannelPlay() {
+	return 0;
+}
+
+int LLChannel::ChannelProc(double* Buffer) {
+
+	switch (status)
+	{
+		case ChannelStatus::CHS_OPENING:
+		{
+			FillChannelBuffer(Buffer, fadeInEff);
+			status = ChannelStatus::CHS_USED;
+			break;
+		}
+		case ChannelStatus::CHS_USED:
+		{
+			FillChannelBuffer(Buffer, nullptr);
+			break;
+		}
+		case ChannelStatus::CHS_CLOSING:
+		{
+			FillChannelBuffer(Buffer, fadeOutEff);
+			break;
+		}
+		case ChannelStatus::CHS_INACTIVE:
+		{
+			break;
+		}
+	}
+	return 0;
+}
+
+int LLChannel::FillChannelBuffer(double* Buffer, void(*funcprt)(LLChannel, double&, int))
+{
+	for (int i = 0; i < BUFFER_SIZE; i++)
+	{
+		double curAmount = std::sin(channelPhase);
+
+		if (funcprt != nullptr)
+			funcprt(*this, curAmount, i);
+
+		Buffer[i] += curAmount;
+		channelPhase += 2.0 * std::numbers::pi * channelFrequency / 44100.0;
+
+		if (channelPhase > 2.0 * std::numbers::pi)
+			channelPhase -= 2.0 * std::numbers::pi;
+
+	}
+
+	return 0;
+}
+
+void  LLChannel::fadeInEff(LLChannel channel ,double& amount, int curPos)
+{
+	if (curPos < channel.fadeInAmount && channel.fadeInAmount != 0)
+		amount *= static_cast<double>(curPos) / channel.fadeInAmount;
+}
+
+void  LLChannel::fadeOutEff(LLChannel channel, double& amount, int curPos)
+{
+	if (curPos > BUFFER_SIZE - channel.fadeOutAmount && channel.fadeOutAmount != 0)
+		amount *=  (1.0 - (static_cast<double>(BUFFER_SIZE - curPos) / BUFFER_SIZE));
+}
